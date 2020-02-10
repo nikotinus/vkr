@@ -15,7 +15,6 @@
 - get_rating_result_values
 - get_backet_result_values
 """
-import gc
 import datetime
 from dateutil.parser import parse
 from numpy import nan
@@ -44,6 +43,20 @@ LIST_OF_ENCODINGS = Encodings(utf8='utf-8', win1251='Windows-1251')
 DEFAULT_FILENAME = os.path.join(os.path.dirname(__file__), "sample.csv")
 
 
+def timer(fn):
+    def wrapper(*args, **qwargs):
+        """
+        Декоратор для измерения времени исполнения функции
+        """
+        start = datetime.datetime.now()
+        res = fn(*args, **qwargs)
+        finish = datetime.datetime.now()
+        print(f'Функция {fn.__name__} выполнилась за: {finish - start}')
+        return res
+    return wrapper
+
+
+@timer
 def main():
     """
     Описывает основной алгоритм:
@@ -55,7 +68,6 @@ def main():
     - сохранить результаты в csv
     """
     start = datetime.datetime.now()
-    gc.disable()
     print(f'We start execution at: {start}')
     # csv = 'code/Подготовленный.csv'
     # df = read_data(filename=csv)
@@ -64,11 +76,11 @@ def main():
     backet_target = get_backet_target_values()
     df_with_backet = construct_default_picture(df, rating_target, backet_target)
     rating_result = get_rating_result_values(df_with_backet)
-    print(rating_result)
+    print(f'Результаты подбора рейтингов: {rating_result}')
+    rating_target = get_rating_target_per_years(df)
+    print(f'Целевые значения рейтингов: {rating_target}')
     #TODO: backet_result = get_backet_result_values(df_with_backet)
     finish = datetime.datetime.now() - start
-    gc.collect()
-    gc.enable()
     print(f'We finished. Total time execution: {finish}')
 
 
@@ -211,7 +223,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                     else: 
                         no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
                         df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
-                    
+                    print(f' month: {month}, rating: {rating}')
             elif idx > 1:
                 for category, chance in categories.items():
                     category_to_set = chance[0]        
@@ -236,7 +248,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
     return df
 
 
-def get_rating_result_values(df):
+def get_rating_result_values(df:DFrame)->DFrame:
     """
     Возвращеет статистику по долям рейтингов заданном датафрейме
     """
@@ -245,6 +257,33 @@ def get_rating_result_values(df):
     shares = shares.set_index(pd.to_datetime(shares.index, dayfirst=True))
     years = set([month.year for month in shares.index])
     return pd.DataFrame({year_: shares.loc[str(year_), :].mean() for year_ in years})
+
+
+def get_rating_target_per_years(df:DFrame, rating_val:dict)->DFrame:
+    """
+    Возвращает ДатаФрейм, содержащий цлеевые значения долей рейтингов по годам
+    """
+    res = {}
+    rt_val = rating_val.copy()
+    for month in df.columns:
+        try: 
+            parse(month)
+        except Exception:
+            continue
+            
+        res[month] = {rating: value.min for rating,value in rt_val.items()}
+        k = _get_adjusting_coefficient(month)
+        rt_val = _correct_min_max_values(rt_val, k)
+    years = set([parse(month).year for month in res])
+    res = pd.DataFrame(res).T
+    res.index=pd.to_datetime(res.index, dayfirst=True)
+    res.loc[:, 'экспресс без ФА'] = 1 - (
+        res.loc[:, 'низкий'] +
+        res.loc[:, 'средний'] +
+        res.loc[:, 'высокий']
+    )
+    res = {year_: res.loc[str(year_), :].mean() for year_ in years}
+    return pd.DataFrame(res)
 
 
 def _check_collection_for_ratings(collection)->None:
@@ -284,49 +323,82 @@ def _get_min_max_rating_values(data=None) -> dict:
     return min_max_values
 
 
-def _get_adjusting_coefficient(month)->float:
+def _get_adjusting_coefficient(month)->dict:
     """
     Возращаем коэффициент коррекции в зависимости от полученного месяца
     """
+    
+    global RATING_NAMES
+
     assert isinstance(month, str), f'Некорректный тип: {type(month)}'
+
+    trgt_years_rating = {
+        2018: {
+            RATING_NAMES.high:    0.52,
+            RATING_NAMES.medium:  0.26,
+            RATING_NAMES.low:     0.20,
+            RATING_NAMES.express: 0.02,
+        },
+        2019: {
+            RATING_NAMES.high:    0.50,
+            RATING_NAMES.medium:  0.27,
+            RATING_NAMES.low:     0.21,
+            RATING_NAMES.express: 0.02,
+        },
+        2020: {
+            RATING_NAMES.high:    0.46,
+            RATING_NAMES.medium:  0.30,
+            RATING_NAMES.low:     0.22,
+            RATING_NAMES.express: 0.02,
+        },
+        2021: {
+            RATING_NAMES.high:    0.40,
+            RATING_NAMES.medium:  0.34,
+            RATING_NAMES.low:     0.24,
+            RATING_NAMES.express: 0.02,
+        },
+        2022: {
+            RATING_NAMES.high:    0.34,
+            RATING_NAMES.medium:  0.35,
+            RATING_NAMES.low:     0.25,
+            RATING_NAMES.express: 0.06,
+        }, 
+    }
     try:
         _date = parse(month)
     except Exception:
         f'Ошибка при парсинге полученного месяца: {month}'
-    if _date < parse("01.01.2019"):
-        return 0.002
-    elif _date < parse("01.01.2020"):
-        return 0.003
-    elif _date < parse("01.01.2021"):
-        return 0.004
-    else:
-        return 0.005
+    return trgt_years_rating[_date.year]
 
 
-def _correct_min_max_values(rating_values, coefficient)->dict:
+def _correct_min_max_values(rating_values, trgt_val)->dict:
     """
     Корректирует полученные значения рейтингов на полученный коэффицент.
     Возвращает скорректированные значения рейтингов.
     """
+
+    global RATING_NAMES
+
+
     assert isinstance(rating_values, dict), f'Некорректный тип {type(rating_values)}'
     _check_collection_for_ratings(rating_values)
-    assert isinstance(coefficient, float), f'Некорректный тип {type(coefficient)}'
+    assert isinstance(trgt_val, dict), f'Некорректный тип {type(trgt_val)}'
 
-    tmp_min = rating_values['высокий'].min - coefficient
-    tmp_max = rating_values['высокий'].max - coefficient
-    rating_values['высокий'] = Borders(min=tmp_min, max=tmp_max)
+    rating_values['высокий'] = Borders(
+        min=trgt_val[RATING_NAMES.high], 
+        max=trgt_val[RATING_NAMES.high] + 0.01,
+        )
     
-    tmp_min = rating_values['средний'].min + coefficient / 2
-    tmp_max = rating_values['средний'].max + coefficient / 2
-    rating_values['средний'] = Borders(min=tmp_min, max=tmp_max)
+    rating_values['средний'] = Borders(
+        min=trgt_val[RATING_NAMES.medium], 
+        max=trgt_val[RATING_NAMES.medium] + 0.01,
+        )
 
-    tmp_min = rating_values['низкий'].min + coefficient / 2 - 0.001
-    tmp_max = rating_values['низкий'].max + coefficient / 2 - 0.001
-    rating_values['низкий'] = Borders(min=tmp_min, max=tmp_max)
+    rating_values['низкий'] = Borders(
+        min=trgt_val[RATING_NAMES.low], 
+        max=trgt_val[RATING_NAMES.low] + 0.01,
+        )
 
-    # tmp_min = rating_values['экспресс без ФА'].min + coefficient / 2
-    # tmp_max = rating_values['экспресс без ФА'].max + coefficient / 2
-    # rating_values['экспресс без ФА'] = Borders(min=tmp_min, max=tmp_max)
     return rating_values
 
 
