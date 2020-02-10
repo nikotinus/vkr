@@ -15,12 +15,12 @@
 - get_rating_result_values
 - get_backet_result_values
 """
-
+import gc
 import datetime
 from dateutil.parser import parse
 from numpy import nan
 import pandas as pd
-import random as rnd
+import os
 from typing import Dict, NewType
 from collections import namedtuple
 
@@ -30,6 +30,7 @@ RatingNames = namedtuple('RatingNames', [
     
 Borders = namedtuple('Borders', ['min', 'max'])
 Encodings = namedtuple('Encodings', ['utf8', 'win1251'])
+DFrame = NewType('DFrame', pd.core.frame.DataFrame)
 
 RATING_NAMES = RatingNames(
     high="высокий",
@@ -38,11 +39,9 @@ RATING_NAMES = RatingNames(
     express="экспресс без ФА",
     without='без рейтинга')
     
-DFrame = NewType('DFrame', pd.core.frame.DataFrame)
-encodings = Encodings(utf8='utf-8', win1251='Windows-1251')
+LIST_OF_ENCODINGS = Encodings(utf8='utf-8', win1251='Windows-1251')
 
-
-DEFAULT_FILENAME = "R:/Проект ФинМодель/Прогноз CF по лиз платежам/Подготовленный.csv"
+DEFAULT_FILENAME = os.path.join(os.path.dirname(__file__), "sample.csv")
 
 
 def main():
@@ -56,39 +55,51 @@ def main():
     - сохранить результаты в csv
     """
     start = datetime.datetime.now()
+    gc.disable()
     print(f'We start execution at: {start}')
-    csv = 'code/Подготовленный.csv'
-    df = read_data(filename=csv)
-    rating_target = get_rating_target_values(rating_tobe_last="экспресс без ФА")
+    # csv = 'code/Подготовленный.csv'
+    # df = read_data(filename=csv)
+    df = read_data()
+    rating_target = get_rating_target_values(rating_tobe_last=RATING_NAMES.high)
     backet_target = get_backet_target_values()
     df_with_backet = construct_default_picture(df, rating_target, backet_target)
     rating_result = get_rating_result_values(df_with_backet)
+    print(rating_result)
     #TODO: backet_result = get_backet_result_values(df_with_backet)
     finish = datetime.datetime.now() - start
+    gc.collect()
+    gc.enable()
     print(f'We finished. Total time execution: {finish}')
 
 
-def read_data(filename: str, encoding='utf-8')->DFrame:
+def read_data(filename:str=None, encoding='utf-8')->DFrame:
     """
     read data from file
     return pandas Dataframe
     """
+
+    global RATING_NAMES
+    global DEFAULT_FILENAME
+    global LIST_OF_ENCODINGS
+
+
     if filename is None:
         filename = DEFAULT_FILENAME
     _check_type(filename, str)
     if encoding is None:
         encoding = 'utf-8'
     _check_type(encoding, str)
-    assert encoding in encodings, f'Полученная кодировка {encoding} отсутствует в списке возможных {encodings}'
+    assert encoding in LIST_OF_ENCODINGS, f'Полученная кодировка \
+        {encoding} отсутствует в списке возможных {LIST_OF_ENCODINGS}'
     csv = filename
-    # csv = "/Volumes/Transcend/Avalon/Pandas/Ratings/Data/Подготовленный.csv"
-    types = {key: 'float32' for key in range(2, 62)}
-    df = pd.read_csv(csv, encoding=encoding, sep=',',
-                     dtype=types, index_col=[0, 1, 62])
+    df = pd.read_csv(csv, encoding=encoding, sep=',', index_col=['Расчет', 'IDКлиента'])
+    if "Unnamed: 0" in df.columns:
+        df = df.drop("Unnamed: 0", axis=1)
     df.fillna(value=nan, inplace=True)
     df.replace(0, nan, inplace=True)
     pd.options.display.float_format = '{:,.2f}'.format
     df['ratings'] = RATING_NAMES.without
+    mask = (df['ratings'] == RATING_NAMES.without) & df['01.01.2018'].notna()
     return df
 
 
@@ -144,16 +155,17 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
     основной этап: для каждого месяца заполняет рейтинг, строит картину платежей
     """
     global RATING_NAMES
+
     _check_type(df_to_fill, pd.core.frame.DataFrame)
     _check_type(rating_target, tuple)
     _check_type(backet_target, dict)
 
-    # df = df_to_fill.copy()
-    df = df_to_fill
+    df = df_to_fill.copy()
     
     rating_values = rating_target[0]
     last_rating_to_define = rating_target[1]
     probability_tobe_overdue = backet_target['выход на просрочку'][RATING_NAMES.without][1]
+    probability_tobe_overdue[last_rating_to_define] = probability_tobe_overdue.pop(last_rating_to_define)
 
     clients_with_rating = {}
     backets = []
@@ -171,8 +183,9 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
         for status, categories in payment_statuses.items():
             if status=="выход на просрочку":
                 sum_month = round(df[month].sum(), 2)
+                ratings_proceed = 0
                 for rating, probability in probability_tobe_overdue.items():
-                    # присваиваем рейтинги
+                    # присваиваем рейтинги для всех, кроме "последнего"
                     if rating!=last_rating_to_define:
                         min_val = rating_values[rating].min
                         rating_share = _define_rating_share(
@@ -182,20 +195,23 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                             min_value=min_val,
                             clients_with_rating=clients_with_rating, 
                             sum_month=sum_month)
-                    else:    
+                        ratings_proceed += 1
+                        # начинаем набор следующего бакета
+                        rating_sum = round(df[df['ratings']==rating][month].sum(), 2)
+                        target_share = probability
+                        overdue_rating_sum = _fill_payment_overdue(
+                            df=df, 
+                            month=month, 
+                            cur_backet_month=cur_backet_month, 
+                            rating=rating, 
+                            rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
+                            target_share=target_share)
+                        share = overdue_rating_sum / rating_sum
+                    # заполняем последний
+                    else: 
                         no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
                         df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
-                    # начинаем набор следующего бакета
-                    rating_sum = round(df[df['ratings']==rating][month].sum(), 2)
-                    target_share = probability
-                    overdue_rating_sum = _fill_payment_overdue(
-                        df=df, 
-                        month=month, 
-                        cur_backet_month=cur_backet_month, 
-                        rating=rating, 
-                        rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
-                        target_share=target_share)
-                    share = overdue_rating_sum / rating_sum
+                    
             elif idx > 1:
                 for category, chance in categories.items():
                     category_to_set = chance[0]        
@@ -360,6 +376,7 @@ def _define_rating_share(
     min_value:float, 
     clients_with_rating:dict, 
     sum_month:float)->float:
+    global RATING_NAMES
     """
     Заполняет рейтинг в заданном месяце.
     Возвращет итоговое значение доли рейтинга.
@@ -370,8 +387,8 @@ def _define_rating_share(
     assert isinstance(min_value, float), f"Некорректный тип: {type(min_value)}"
 
     _min = min_value
-    mask = df['ratings'] == rating
-    sum_rating = round(df.loc[mask, month].sum(), 2)
+    mask = (df['ratings'] == rating)
+    sum_rating = round(df[mask][month].sum(), 2)
     if sum_rating / sum_month < _min:
         without_rating = (df[month].notna()) & (df['ratings'] == RATING_NAMES.without)
         sum_rating, clients_with_rating = _fill_rating(
@@ -396,8 +413,9 @@ def _fill_rating(df, month, empty_criteria, rating, sum_rating, sum_month, min_v
     cur_share = sum_rating / sum_month
     step = 1
     while cur_share < min_value and step <= empty_rows_count:
-        idx = rnd.randint(0, empty_rows_count - 1)
-        id_client = empty_data.index.values[idx][2]
+        # idx = rnd.randint(0, empty_rows_count - 1)
+        # id_client = empty_data.index.values[idx][1]
+        id_client = empty_data.sample(1).index[0][1]
         if id_client not in proceed_clients:
             proceed_clients[id_client] = month
         elif proceed_clients[id_client] != month:
@@ -405,9 +423,8 @@ def _fill_rating(df, month, empty_criteria, rating, sum_rating, sum_month, min_v
                 'Клиент повторно обрабатывается из предыдущего месяца!')
         else:
             continue
-        df.loc[(slice(None), slice(None), id_client), 'ratings'] = rating
-        sum_rating += round(df.loc[(slice(None),
-                                    slice(None), id_client), month].sum(), 2)
+        df.loc[(slice(None), id_client), 'ratings'] = rating
+        sum_rating += round(df.loc[(slice(None), id_client), month].sum(), 2)
         cur_share = sum_rating / sum_month
         step += 1
     return sum_rating, proceed_clients
@@ -432,16 +449,17 @@ def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, targe
     cur_share = sum_target_category / rating_sum
     step = 1
     while cur_share < target_share and step <= no_debt_length:
-        idx = rnd.randint(0, no_debt_length - 1)
-        id_client = no_debt_df.index.values[idx][2]
+        # idx = rnd.randint(0, no_debt_length - 1)
+        # id_client = no_debt_df.index.values[idx][1]
+        id_client = no_debt_df.sample(1).index[0][1]
         if id_client not in proceeded_clients:
             proceeded_clients[id_client] = target_category
         else:
             continue
-        df.loc[(slice(None), slice(None), id_client),
+        df.loc[(slice(None), id_client),
                cur_backet_month] = target_category
         sum_target_category += round(
-            df.loc[(slice(None), slice(None), id_client), month].sum(), 2)
+            df.loc[(slice(None), id_client), month].sum(), 2)
         cur_share = sum_target_category / rating_sum
         step += 1
     return sum_target_category
@@ -467,16 +485,17 @@ def _fill_payment_progress(
     step = 1
     proceeded_clients = {}
     while share < target_share and step <= max_count:
-        idx = rnd.randint(0, max_count - 1)
-        id_client = cat_in_prev_backet.index.values[idx][2]
+        # idx = rnd.randint(0, max_count - 1)
+        # id_client = cat_in_prev_backet.index.values[idx][1]
+        id_client = cat_in_prev_backet.sample(1).index[0][1]
         if id_client not in proceeded_clients:
             proceeded_clients[id_client] = category_to_set
         else:
             continue
-        df.loc[(slice(None), slice(None), id_client),
+        df.loc[(slice(None), id_client),
                cur_backet_month] = category_to_set
         sum_cat_in_cur_backet += round(
-            df.loc[(slice(None), slice(None), id_client), month].sum(), 2)
+            df.loc[(slice(None), id_client), month].sum(), 2)
         share = sum_cat_in_cur_backet / sum_cat_in_prev_backet
         step += 1
     return sum_cat_in_cur_backet
