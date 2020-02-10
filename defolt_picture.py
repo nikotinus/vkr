@@ -26,16 +26,23 @@ from collections import namedtuple
 
 RatingNames = namedtuple('RatingNames', [
     'high', 'medium', 'low', 'express', 'without'])
+    
+    
 Borders = namedtuple('Borders', ['min', 'max'])
 Encodings = namedtuple('Encodings', ['utf8', 'win1251'])
-rating_names = RatingNames(
+
+RATING_NAMES = RatingNames(
     high="высокий",
     medium="средний",
     low="низкий",
     express="экспресс без ФА",
     without='без рейтинга')
+    
 DFrame = NewType('DFrame', pd.core.frame.DataFrame)
 encodings = Encodings(utf8='utf-8', win1251='Windows-1251')
+
+
+DEFAULT_FILENAME = "R:/Проект ФинМодель/Прогноз CF по лиз платежам/Подготовленный.csv"
 
 
 def main():
@@ -67,7 +74,7 @@ def read_data(filename: str, encoding='utf-8')->DFrame:
     return pandas Dataframe
     """
     if filename is None:
-        filename = "R:\\Проект ФинМодель\\Прогноз CF по лиз платежам\\Подготовленный.csv"
+        filename = DEFAULT_FILENAME
     _check_type(filename, str)
     if encoding is None:
         encoding = 'utf-8'
@@ -81,7 +88,7 @@ def read_data(filename: str, encoding='utf-8')->DFrame:
     df.fillna(value=nan, inplace=True)
     df.replace(0, nan, inplace=True)
     pd.options.display.float_format = '{:,.2f}'.format
-    df['ratings'] = rating_names.without
+    df['ratings'] = RATING_NAMES.without
     return df
 
 
@@ -91,8 +98,11 @@ def get_rating_target_values(rating_tobe_last:str=None)->dict:
     0 - словарь с целевыми значениями долей рейтингов, ключи -названия рейтинга, значения экземпляр Borders
     1 - название ретийнга, который присваивается последним, по остаточному принципу
     """
-    global rating_names
-    assert rating_tobe_last in rating_names, f'Полученный рейтинг \
+    
+    global RATING_NAMES #
+    
+    
+    assert rating_tobe_last in RATING_NAMES, f'Полученный рейтинг \
                                               "{rating_tobe_last}" отсутствует в списке известных'
     rating_values = _get_min_max_rating_values()
     _check_type(rating_values, dict)
@@ -133,7 +143,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
     """
     основной этап: для каждого месяца заполняет рейтинг, строит картину платежей
     """
-    global rating_names
+    global RATING_NAMES
     _check_type(df_to_fill, pd.core.frame.DataFrame)
     _check_type(rating_target, tuple)
     _check_type(backet_target, dict)
@@ -143,7 +153,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
     
     rating_values = rating_target[0]
     last_rating_to_define = rating_target[1]
-    probability_tobe_overdue = backet_target['выход на просрочку'][rating_names.without][1]
+    probability_tobe_overdue = backet_target['выход на просрочку'][RATING_NAMES.without][1]
 
     clients_with_rating = {}
     backets = []
@@ -173,7 +183,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                             clients_with_rating=clients_with_rating, 
                             sum_month=sum_month)
                     else:    
-                        no_rating_df = df[(df[month].notna()) & (df['ratings']==rating_names.without)]
+                        no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
                         df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
                     # начинаем набор следующего бакета
                     rating_sum = round(df[df['ratings']==rating][month].sum(), 2)
@@ -222,9 +232,9 @@ def get_rating_result_values(df):
 
 
 def _check_collection_for_ratings(collection)->None:
-    global rating_names
-    for name in rating_names:
-        if name != rating_names.without:
+    global RATING_NAMES
+    for name in RATING_NAMES:
+        if name != RATING_NAMES.without:
             assert name in collection, f'В справочнике {collection} отсутствует рейтинг {name}'
 
 
@@ -321,7 +331,7 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     """
     Получает целевые параметры перехода просрочки из бакета в бакет
     """
-    global rating_names
+    global RATING_NAMES
     if rating_dependencies is None:
         rating_dependencies = _get_rating_dependencies()
     assert isinstance(rating_dependencies, dict), f'Некорректный тип: {type(rating_dependencies)}'
@@ -330,7 +340,7 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     
     return {
         "выход на просрочку": {
-            rating_names.without: ("1-30", rating_dependencies),
+            RATING_NAMES.without: ("1-30", rating_dependencies),
         },
         "увеличение просрочки": {
             "1-30": ("31-60", 0.25),
@@ -363,7 +373,7 @@ def _define_rating_share(
     mask = df['ratings'] == rating
     sum_rating = round(df.loc[mask, month].sum(), 2)
     if sum_rating / sum_month < _min:
-        without_rating = (df[month].notna()) & (df['ratings'] == rating_names.without)
+        without_rating = (df[month].notna()) & (df['ratings'] == RATING_NAMES.without)
         sum_rating, clients_with_rating = _fill_rating(
             df=df,
             month=month,
@@ -407,8 +417,8 @@ def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, targe
     """
     Присваивает платежу статус первой просрочки
     """
-    global rating_names
-    cur_category = rating_names.without
+    global RATING_NAMES
+    cur_category = RATING_NAMES.without
     target_category = "1-30"
     proceeded_clients = {}
     no_debt_df = df[(df[month].notna()) & (df[cur_backet_month]
@@ -494,11 +504,11 @@ def _fill_cur_backet_from_prev(
     """
 
     """
-    global rating_names
+    global RATING_NAMES
     df[cur_backet_month] = ""
     df[cur_backet_month] = df[prev_backet_month]
     no_backet_df = df[(df[month].notna()) & (df[cur_backet_month] == "")]
-    df.loc[no_backet_df.index.values, cur_backet_month] = rating_names.without
+    df.loc[no_backet_df.index.values, cur_backet_month] = RATING_NAMES.without
     res = f'Текущий {cur_backet_month} предварительно заполнен.'
     return res
 
