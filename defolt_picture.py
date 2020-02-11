@@ -21,7 +21,7 @@ import os
 import pandas as pd
 import random as rnd
 from collections import namedtuple
-from dateutil.parser import parse
+from dateutil.parser import parse, ParserError
 from numpy import nan
 from typing import Dict, NewType
 
@@ -30,8 +30,10 @@ from my_logging import get_func_name, get_func_params_and_values, get_func_param
 
 # Блок общего описания
 name = 'default_picture'
-version = 2.3
+version = 2.4
 updates = f"""
+2.4:
+    - small bugfix and making code nice
 2.3:
     - bug fixed: backet name "без рейтинга" исправлен на "Без просрочки"
 2.2:
@@ -56,6 +58,7 @@ RatingNames = namedtuple('RatingNames',
     ['high', 'medium', 'low', 'express', 'without'])
 Borders = namedtuple('Borders', ['min', 'max'])
 Encodings = namedtuple('Encodings', ['utf8', 'win1251'])
+Backetnames = namedtuple('Backetnames', ['intime', 'first', 'second', 'defolt'])
 DFrame = NewType('DFrame', pd.core.frame.DataFrame)
 
 RATING_NAMES = RatingNames(
@@ -97,6 +100,12 @@ TRGT_YEARS_RATING = {
             RATING_NAMES.express: Borders(min=0.06, max=0.08),
         }, 
     }
+BACKET_NAMES = Backetnames(
+    intime = "Без просрочки", 
+    first  = "1-30", 
+    second = "31-60", 
+    defolt = "defolt"
+    )
 
 LIST_OF_ENCODINGS = Encodings(utf8='utf-8', win1251='Windows-1251')
 
@@ -142,11 +151,14 @@ def main():
     backet_target = get_backet_target_values()
     df_with_backet = construct_default_picture(df, rating_target, backet_target)
     rating_result = get_rating_result_values(df_with_backet)
-    print(f'Результаты подбора рейтингов:\n{rating_result}')
+    msg = f'Результаты подбора рейтингов:\n{rating_result}'
+    logging.info(msg)
     rating_target = get_rating_target_per_years()
-    print(f'Целевые значения рейтингов:\n{rating_target}')
+    msg = f'Целевые значения рейтингов:\n{rating_target}'
+    logging.info(msg)
     #TODO: backet_result = get_backet_result_values(df_with_backet)
     finish = datetime.datetime.now() - start
+    df_with_backet.to_csv('result.csv')
     print(f'We finished. Total time execution: {finish}')
 
 
@@ -254,7 +266,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
     rating_values = rating_target[0]
 
     last_rating_to_define = rating_target[1]
-    probability_tobe_overdue = backet_target['выход на просрочку']['Без просрочки'][1]
+    probability_tobe_overdue = backet_target['выход на просрочку'][BACKET_NAMES.intime][1]
     probability_tobe_overdue[last_rating_to_define] = probability_tobe_overdue.pop(last_rating_to_define)
 
     backets = []
@@ -370,20 +382,10 @@ def get_rating_result_values(df):
 @timer
 def get_rating_target_per_years():
     global TRGT_YEARS_RATING
-    global RATING_NAMES
-    
-    res = {}
-    for year_, ratings in TRGT_YEARS_RATING.items():
-        res[year_] = {
-            RATING_NAMES.high:    ratings[RATING_NAMES.high].min,
-            RATING_NAMES.medium:  ratings[RATING_NAMES.medium].min,
-            RATING_NAMES.low:     ratings[RATING_NAMES.low].min,
-            RATING_NAMES.express: ratings[RATING_NAMES.express].min,
-        }
-    res = pd.DataFrame(res).T
-    res.index=pd.to_datetime(res.index, dayfirst=True)
-    
-    return res.groupby(res.index.year).mean().T
+    indx = (RATING_NAMES.high, RATING_NAMES.medium, RATING_NAMES.low, RATING_NAMES.express)
+    res = {year: {rating: value.min for rating, value in ratings.items()} for year,ratings in TRGT_YEARS_RATING.items()}
+    res = pd.DataFrame(res, index=indx)
+    return res
 
 
 def _check_collection_for_ratings(collection)->None:
@@ -469,7 +471,7 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     """
     Получает целевые параметры перехода просрочки из бакета в бакет
     """
-    global RATING_NAMES
+    global BACKET_NAMES
     
 
     if rating_dependencies is None:
@@ -481,20 +483,19 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     
     return {
         "выход на просрочку": {
-            "Без просрочки": ("1-30", rating_dependencies),
+            BACKET_NAMES.intime: (BACKET_NAMES.first, rating_dependencies),
         },
         "увеличение просрочки": {
-            "1-30": ("31-60", 0.25),
-            "31-60": ("дефолт", 0.3),
+            BACKET_NAMES.first:  (BACKET_NAMES.second, 0.25),
+            BACKET_NAMES.second: (BACKET_NAMES.defolt, 0.3),
         },
         "погашение просрочки": {
-            "1-30": ("Без просрочки", 0.25),
-            "31-60": ("1-30", 0.4),
+            BACKET_NAMES.first:  (BACKET_NAMES.intime, 0.25),
+            BACKET_NAMES.second: (BACKET_NAMES.first, 0.4),
         },
     }
 
 
-@timer
 def _define_rating_share(
     df: DFrame, 
     month:str, 
@@ -568,9 +569,9 @@ def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, targe
     """
     Присваивает платежу статус первой просрочки
     """
-    global RATING_NAMES
-    cur_category = RATING_NAMES.without
-    target_category = "1-30"
+    global BACKET_NAMES
+    cur_category = BACKET_NAMES.intime
+    target_category = BACKET_NAMES.first
     proceeded_clients = {}
     no_debt_df = df[(df[month].notna()) & (df[cur_backet_month]
                                            == cur_category) & (df['ratings'] == rating)]
@@ -657,30 +658,27 @@ def _fill_cur_backet_from_prev(
     """
 
     """
-    global RATING_NAMES
+    global BACKET_NAMES
+
+
     df[cur_backet_month] = ""
     df[cur_backet_month] = df[prev_backet_month]
     no_backet_df = df[(df[month].notna()) & (df[cur_backet_month] == "")]
-    df.loc[no_backet_df.index.values, cur_backet_month] = RATING_NAMES.without
+    df.loc[no_backet_df.index.values, cur_backet_month] = BACKET_NAMES.intime
     res = f'Текущий {cur_backet_month} предварительно заполнен.'
     return res
 
 
 def get_backet_resulting_shares(df):
-    return df.loc[:2000, [
-        'backet_01.01.2019',
-        'backet_01.02.2019',
-        'backet_01.03.2019',
-        'backet_01.04.2019',
-        'backet_01.05.2019',
-        'backet_01.06.2019',
-        'backet_01.07.2019',
-        'backet_01.08.2019',
-        'backet_01.09.2019',
-        'backet_01.10.2019',
-        'backet_01.11.2019',
-        'backet_01.12.2019',
-    ]]
+    res = {}
+    for column in df.columns:
+        tmp = column.split('_')
+        if 'backet' in tmp:
+            month = tmp[1]
+            res[month] = df.groupby(column)[month].sum().to_dict()
+    res = pd.DataFrame(res).T
+
+    return res
 
 
 if __name__ == '__main__':
