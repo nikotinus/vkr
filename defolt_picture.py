@@ -16,17 +16,44 @@
 - get_backet_result_values
 """
 import datetime
+import logging
+import os
+import pandas as pd
+import random as rnd
+from collections import namedtuple
 from dateutil.parser import parse
 from numpy import nan
-import pandas as pd
-import os
 from typing import Dict, NewType
-from collections import namedtuple
 
-RatingNames = namedtuple('RatingNames', [
-    'high', 'medium', 'low', 'express', 'without'])
-    
-    
+from my_logging import get_func_name, get_func_params_and_values, get_func_params
+
+
+# Блок общего описания
+name = 'default_picture'
+version = 2.3
+updates = f"""
+2.3:
+    - bug fixed: backet name "без рейтинга" исправлен на "Без просрочки"
+2.2:
+    - asserts moved into DEBUG section
+"""
+instr = f'''
+    Версия: {name}-{version}
+    {__doc__}
+'''
+
+# Блок логгирования
+# log_format = u'[LINE:%(lineno)d]# %(levelname)-8s %(message)s'
+log_format = u'%(levelname)-8s %(message)s'
+log_level = logging.INFO
+path = 'Logs'
+name = f'logs_{name}_{version}.log'
+log_file_name = os.path.join(path, name)
+logging.basicConfig(format=log_format, level=log_level, filename=log_file_name)
+
+
+RatingNames = namedtuple('RatingNames', 
+    ['high', 'medium', 'low', 'express', 'without'])
 Borders = namedtuple('Borders', ['min', 'max'])
 Encodings = namedtuple('Encodings', ['utf8', 'win1251'])
 DFrame = NewType('DFrame', pd.core.frame.DataFrame)
@@ -37,7 +64,40 @@ RATING_NAMES = RatingNames(
     low="низкий",
     express="экспресс без ФА",
     without='без рейтинга')
-    
+
+TRGT_YEARS_RATING = {
+        2018: {
+            RATING_NAMES.high:    Borders(min=0.52, max=0.56),
+            RATING_NAMES.medium:  Borders(min=0.26, max=0.28),
+            RATING_NAMES.low:     Borders(min=0.20, max=0.22),
+            RATING_NAMES.express: Borders(min=0.02, max=0.03),
+        },
+        2019: {
+            RATING_NAMES.high:    Borders(min=0.50, max=0.52),
+            RATING_NAMES.medium:  Borders(min=0.27, max=0.29),
+            RATING_NAMES.low:     Borders(min=0.21, max=0.23),
+            RATING_NAMES.express: Borders(min=0.02, max=0.03),
+        },
+        2020: {
+            RATING_NAMES.high:    Borders(min=0.46, max=0.49),
+            RATING_NAMES.medium:  Borders(min=0.30, max=0.32),
+            RATING_NAMES.low:     Borders(min=0.22, max=0.24),
+            RATING_NAMES.express: Borders(min=0.02, max=0.03),
+        },
+        2021: {
+            RATING_NAMES.high:    Borders(min=0.40, max=0.44),
+            RATING_NAMES.medium:  Borders(min=0.34, max=0.36),
+            RATING_NAMES.low:     Borders(min=0.24, max=0.26),
+            RATING_NAMES.express: Borders(min=0.02, max=0.03),
+        },
+        2022: {
+            RATING_NAMES.high:    Borders(min=0.34, max=0.36),
+            RATING_NAMES.medium:  Borders(min=0.35, max=0.38),
+            RATING_NAMES.low:     Borders(min=0.25, max=0.27),
+            RATING_NAMES.express: Borders(min=0.06, max=0.08),
+        }, 
+    }
+
 LIST_OF_ENCODINGS = Encodings(utf8='utf-8', win1251='Windows-1251')
 
 DEFAULT_FILENAME = os.path.join(os.path.dirname(__file__), "sample.csv")
@@ -51,7 +111,11 @@ def timer(fn):
         start = datetime.datetime.now()
         res = fn(*args, **qwargs)
         finish = datetime.datetime.now()
-        print(f'Функция {fn.__name__} выполнилась за: {finish - start}')
+        msg = f"{finish}, время исполнения: {finish - start}, функция {fn.__name__}"
+        tmp = dict(**qwargs)
+        if 'month' in tmp:
+            msg = f"{finish}, время исполнения: {finish - start}, {tmp['month']}. Время исполнения функции: {fn.__name__}"
+        logging.info(msg)
         return res
     return wrapper
 
@@ -69,6 +133,8 @@ def main():
     """
     start = datetime.datetime.now()
     print(f'We start execution at: {start}')
+    msg = instr + updates
+    logging.info(msg)
     # csv = 'code/Подготовленный.csv'
     # df = read_data(filename=csv)
     df = read_data()
@@ -76,14 +142,15 @@ def main():
     backet_target = get_backet_target_values()
     df_with_backet = construct_default_picture(df, rating_target, backet_target)
     rating_result = get_rating_result_values(df_with_backet)
-    print(f'Результаты подбора рейтингов: {rating_result}')
-    rating_target = get_rating_target_per_years(df)
-    print(f'Целевые значения рейтингов: {rating_target}')
+    print(f'Результаты подбора рейтингов:\n{rating_result}')
+    rating_target = get_rating_target_per_years()
+    print(f'Целевые значения рейтингов:\n{rating_target}')
     #TODO: backet_result = get_backet_result_values(df_with_backet)
     finish = datetime.datetime.now() - start
     print(f'We finished. Total time execution: {finish}')
 
 
+@timer
 def read_data(filename:str=None, encoding='utf-8')->DFrame:
     """
     read data from file
@@ -100,9 +167,10 @@ def read_data(filename:str=None, encoding='utf-8')->DFrame:
     _check_type(filename, str)
     if encoding is None:
         encoding = 'utf-8'
-    _check_type(encoding, str)
-    assert encoding in LIST_OF_ENCODINGS, f'Полученная кодировка \
-        {encoding} отсутствует в списке возможных {LIST_OF_ENCODINGS}'
+    if log_level == logging.DEBUG: 
+        _check_type(encoding, str)
+        assert encoding in LIST_OF_ENCODINGS, f'Полученная кодировка \
+            {encoding} отсутствует в списке возможных {LIST_OF_ENCODINGS}'
     csv = filename
     df = pd.read_csv(csv, encoding=encoding, sep=',', index_col=['Расчет', 'IDКлиента'])
     if "Unnamed: 0" in df.columns:
@@ -111,10 +179,11 @@ def read_data(filename:str=None, encoding='utf-8')->DFrame:
     df.replace(0, nan, inplace=True)
     pd.options.display.float_format = '{:,.2f}'.format
     df['ratings'] = RATING_NAMES.without
-    mask = (df['ratings'] == RATING_NAMES.without) & df['01.01.2018'].notna()
+    # mask = (df['ratings'] == RATING_NAMES.without) & df['01.01.2018'].notna()
     return df
 
 
+@timer
 def get_rating_target_values(rating_tobe_last:str=None)->dict:
     """
     Возвращает список:
@@ -124,20 +193,23 @@ def get_rating_target_values(rating_tobe_last:str=None)->dict:
     
     global RATING_NAMES #
     
-    
-    assert rating_tobe_last in RATING_NAMES, f'Полученный рейтинг \
+    if log_level == logging.DEBUG: 
+        assert rating_tobe_last in RATING_NAMES, f'Полученный рейтинг \
                                               "{rating_tobe_last}" отсутствует в списке известных'
     rating_values = _get_min_max_rating_values()
-    _check_type(rating_values, dict)
+    if log_level == logging.DEBUG: 
+        _check_type(rating_values, dict)
     if rating_tobe_last is None:
         rating_tobe_last = "экспресс без ФА"
-    _check_type(rating_tobe_last, str)
+    if log_level == logging.DEBUG: 
+        _check_type(rating_tobe_last, str)
     last_rating_to_define = rating_tobe_last
     rating_values[last_rating_to_define] = rating_values.pop(last_rating_to_define)
 
     return rating_values, last_rating_to_define
 
 
+@timer
 def get_backet_target_values()->dict:
     """
     Возвращает заданные возможные статусы платежа и их вероятности:
@@ -155,40 +227,49 @@ def get_backet_target_values()->dict:
 
     """
     rating_probability_tobe_overdue = _get_rating_dependencies()
-    _check_type(rating_probability_tobe_overdue, dict)
+    if log_level == logging.DEBUG: 
+        _check_type(rating_probability_tobe_overdue, dict)
+    
     payment_movements_probability = _get_payment_statuses(rating_probability_tobe_overdue)
-    _check_type(payment_movements_probability, dict)
+    if log_level == logging.DEBUG: 
+        _check_type(payment_movements_probability, dict)
     
     return payment_movements_probability
 
 
+@timer
 def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_target: dict)->DFrame:
     """
     основной этап: для каждого месяца заполняет рейтинг, строит картину платежей
     """
     global RATING_NAMES
 
-    _check_type(df_to_fill, pd.core.frame.DataFrame)
-    _check_type(rating_target, tuple)
-    _check_type(backet_target, dict)
+    if log_level == logging.DEBUG: 
+        _check_type(df_to_fill, pd.core.frame.DataFrame)
+        _check_type(rating_target, tuple)
+        _check_type(backet_target, dict)
 
     df = df_to_fill.copy()
     
     rating_values = rating_target[0]
+
     last_rating_to_define = rating_target[1]
-    probability_tobe_overdue = backet_target['выход на просрочку'][RATING_NAMES.without][1]
+    probability_tobe_overdue = backet_target['выход на просрочку']['Без просрочки'][1]
     probability_tobe_overdue[last_rating_to_define] = probability_tobe_overdue.pop(last_rating_to_define)
 
-    clients_with_rating = {}
     backets = []
     
     payment_statuses = backet_target
 
-    for idx, month in enumerate(df.columns, 1):
+    df_columns = df.columns
+    for idx, month in enumerate(df_columns, 1):
         try: 
-            parse(month)
+            _date = parse(month)
         except Exception:
             continue
+        
+        msg = f'Проверка максимального и минимального значений'
+
         backets, cur_backet_month, prev_backet_month = _get_cur_and_prev(backets, month)
         _fill_cur_backet_from_prev(df, month, cur_backet_month, prev_backet_month)
 
@@ -196,34 +277,45 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
             if status=="выход на просрочку":
                 sum_month = round(df[month].sum(), 2)
                 ratings_proceed = 0
+                rating_values = _refresh_min_max_values(_date)
                 for rating, probability in probability_tobe_overdue.items():
-                    # присваиваем рейтинги для всех, кроме "последнего"
-                    if rating!=last_rating_to_define:
-                        min_val = rating_values[rating].min
-                        rating_share = _define_rating_share(
-                            df=df, 
-                            month=month, 
-                            rating=rating, 
-                            min_value=min_val,
-                            clients_with_rating=clients_with_rating, 
-                            sum_month=sum_month)
-                        ratings_proceed += 1
-                        # начинаем набор следующего бакета
-                        rating_sum = round(df[df['ratings']==rating][month].sum(), 2)
-                        target_share = probability
-                        overdue_rating_sum = _fill_payment_overdue(
-                            df=df, 
-                            month=month, 
-                            cur_backet_month=cur_backet_month, 
-                            rating=rating, 
-                            rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
-                            target_share=target_share)
-                        share = overdue_rating_sum / rating_sum
-                    # заполняем последний
-                    else: 
-                        no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
-                        df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
-                    print(f' month: {month}, rating: {rating}')
+                    min_val = rating_values[rating].min
+                    
+                    msg = f'Минимальное значение за {month}: {min_val}'
+                    logging.debug(msg)
+                    
+                    if rating!=RATING_NAMES.without:
+                        if rating!=last_rating_to_define:
+                            rating_share = _define_rating_share(
+                                df=df, 
+                                month=month, 
+                                rating=rating, 
+                                min_value=min_val,
+                                sum_month=sum_month)
+                            ratings_proceed += 1
+
+                            # начинаем набор следующего бакета
+                            rating_sum = round(df[['ratings', month]].groupby('ratings').sum().loc[rating][0], 2)
+                            target_share = probability
+                            overdue_rating_sum = _fill_payment_overdue(
+                                df=df, 
+                                month=month, 
+                                cur_backet_month=cur_backet_month, 
+                                rating=rating, 
+                                rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
+                                target_share=target_share)
+                            share = overdue_rating_sum / rating_sum
+                        # заполняем последний
+                        else: 
+                            no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
+                            df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
+                if log_level == logging.DEBUG: 
+                    rating_sums = df.groupby('ratings')[month].sum()
+                    total_sum = rating_sums.sum()
+                    assert round(sum_month,2)==round(total_sum,2), "sum_month {sum_month} и total_sum {total_sum} не равны"
+                    rating_shares = rating_sums / total_sum
+                    msg = f'{month}.:\n{rating_shares}'
+                    logging.debug(msg)
             elif idx > 1:
                 for category, chance in categories.items():
                     category_to_set = chance[0]        
@@ -242,48 +334,56 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                             category_to_set=category_to_set, 
                             target_share=target_share)
                         share_category = sum_cat_in_cur_backet / sum_cat_in_prev_backet
-                    # print(f'from {prev_backet_month} and {category}-{sum_cat_in_prev_backet:,.0f} to {cur_backet_month}-{category_to_set}-{sum_cat_in_cur_backet:,.0f}, share: {share_category:.0%}')
-        k = _get_adjusting_coefficient(month)                                          
-        rating_values = _correct_min_max_values(rating_values, k)
+                    # print(f'from {prev_backet_month} and {category}-{sum_cat_in_prev_backet:,.0f} to {cur_backet_month}-{category_to_set}-{sum_cat_in_cur_backet:,.0f}, share: {share_category:.0%}')                                        
     return df
 
 
-def get_rating_result_values(df:DFrame)->DFrame:
+@timer
+def get_rating_result_values(df):
     """
-    Возвращеет статистику по долям рейтингов заданном датафрейме
+    Возвращеет статистику по долям рейтингов в заданном датафрейме
     """
-    shares = df.groupby('ratings').sum() / df.groupby('ratings').sum().sum()
-    shares = pd.DataFrame(shares).T
-    shares = shares.set_index(pd.to_datetime(shares.index, dayfirst=True))
-    years = set([month.year for month in shares.index])
-    return pd.DataFrame({year_: shares.loc[str(year_), :].mean() for year_ in years})
-
-
-def get_rating_target_per_years(df:DFrame, rating_val:dict)->DFrame:
-    """
-    Возвращает ДатаФрейм, содержащий цлеевые значения долей рейтингов по годам
-    """
+    global RATING_NAMES
     res = {}
-    rt_val = rating_val.copy()
+    
     for month in df.columns:
         try: 
-            parse(month)
+            _date = parse(month)
         except Exception:
             continue
-            
-        res[month] = {rating: value.min for rating,value in rt_val.items()}
-        k = _get_adjusting_coefficient(month)
-        rt_val = _correct_min_max_values(rt_val, k)
-    years = set([parse(month).year for month in res])
+        
+        ratings_sums = df.groupby('ratings')[month].sum()
+        total_sum = ratings_sums.sum()
+        assert total_sum > 0, f'Сумма по месяцу {month} некорректна: {total_sum}'
+        res[month] = {
+            RATING_NAMES.high:    ratings_sums.loc[RATING_NAMES.high]    / total_sum,
+            RATING_NAMES.medium:  ratings_sums.loc[RATING_NAMES.medium]  / total_sum ,
+            RATING_NAMES.low:     ratings_sums.loc[RATING_NAMES.low]     / total_sum,
+            RATING_NAMES.express: ratings_sums.loc[RATING_NAMES.express] / total_sum,
+        }
     res = pd.DataFrame(res).T
     res.index=pd.to_datetime(res.index, dayfirst=True)
-    res.loc[:, 'экспресс без ФА'] = 1 - (
-        res.loc[:, 'низкий'] +
-        res.loc[:, 'средний'] +
-        res.loc[:, 'высокий']
-    )
-    res = {year_: res.loc[str(year_), :].mean() for year_ in years}
-    return pd.DataFrame(res)
+    
+    return res.groupby(res.index.year).mean().T
+
+
+@timer
+def get_rating_target_per_years():
+    global TRGT_YEARS_RATING
+    global RATING_NAMES
+    
+    res = {}
+    for year_, ratings in TRGT_YEARS_RATING.items():
+        res[year_] = {
+            RATING_NAMES.high:    ratings[RATING_NAMES.high].min,
+            RATING_NAMES.medium:  ratings[RATING_NAMES.medium].min,
+            RATING_NAMES.low:     ratings[RATING_NAMES.low].min,
+            RATING_NAMES.express: ratings[RATING_NAMES.express].min,
+        }
+    res = pd.DataFrame(res).T
+    res.index=pd.to_datetime(res.index, dayfirst=True)
+    
+    return res.groupby(res.index.year).mean().T
 
 
 def _check_collection_for_ratings(collection)->None:
@@ -310,96 +410,46 @@ def _get_min_max_rating_values(data=None) -> dict:
             grade_high_max_value = ratings_values['высокий'].max
         }
     """
-    if data is None:
-        min_max_values = {
-            'экспресс без ФА': Borders(min=0.02, max=0.03),
-            'низкий':          Borders(min=0.20, max=0.22),
-            'средний':         Borders(min=0.24, max=0.26),
-            'высокий':         Borders(min=0.53, max=0.56),
-        }
 
-    _check_collection_for_ratings(min_max_values)
+    global TRGT_YEARS_RATING
+
+
+    if data is None:
+        min_max_values = TRGT_YEARS_RATING[2018]
+    
+    if log_level == logging.DEBUG: 
+        _check_collection_for_ratings(min_max_values)
 
     return min_max_values
 
 
-def _get_adjusting_coefficient(month)->dict:
+def _refresh_min_max_values(month:datetime.datetime, trgt_years:dict=None)->dict:
     """
-    Возращаем коэффициент коррекции в зависимости от полученного месяца
+    Возращает целевые значения рейтинга в зависимости от месяца.
+    Usage:
+            ratings_values = _refresh_min_max_values(month)
+            grade_high_min_value = ratings_values['высокий'].min
+            grade_high_max_value = ratings_values['высокий'].max
     """
     
     global RATING_NAMES
-
-    assert isinstance(month, str), f'Некорректный тип: {type(month)}'
-
-    trgt_years_rating = {
-        2018: {
-            RATING_NAMES.high:    0.52,
-            RATING_NAMES.medium:  0.26,
-            RATING_NAMES.low:     0.20,
-            RATING_NAMES.express: 0.02,
-        },
-        2019: {
-            RATING_NAMES.high:    0.50,
-            RATING_NAMES.medium:  0.27,
-            RATING_NAMES.low:     0.21,
-            RATING_NAMES.express: 0.02,
-        },
-        2020: {
-            RATING_NAMES.high:    0.46,
-            RATING_NAMES.medium:  0.30,
-            RATING_NAMES.low:     0.22,
-            RATING_NAMES.express: 0.02,
-        },
-        2021: {
-            RATING_NAMES.high:    0.40,
-            RATING_NAMES.medium:  0.34,
-            RATING_NAMES.low:     0.24,
-            RATING_NAMES.express: 0.02,
-        },
-        2022: {
-            RATING_NAMES.high:    0.34,
-            RATING_NAMES.medium:  0.35,
-            RATING_NAMES.low:     0.25,
-            RATING_NAMES.express: 0.06,
-        }, 
-    }
-    try:
-        _date = parse(month)
-    except Exception:
-        f'Ошибка при парсинге полученного месяца: {month}'
-    return trgt_years_rating[_date.year]
+    global TRGT_YEARS_RATING
 
 
-def _correct_min_max_values(rating_values, trgt_val)->dict:
-    """
-    Корректирует полученные значения рейтингов на полученный коэффицент.
-    Возвращает скорректированные значения рейтингов.
-    """
+    if log_level == logging.DEBUG: 
+        assert isinstance(month, datetime.datetime), f'Некорректный тип: {type(month)}'
+    if trgt_years is None:
+        trgt_years = TRGT_YEARS_RATING
+    if log_level == logging.DEBUG: 
+        assert isinstance(trgt_years, dict), f'Некорректный тип: {type(trgt_years)}'
+        assert month.year in trgt_years, f'Год полученной даты ({month}) отсутвует в целевых значениях {trgt_years}'
 
-    global RATING_NAMES
-
-
-    assert isinstance(rating_values, dict), f'Некорректный тип {type(rating_values)}'
-    _check_collection_for_ratings(rating_values)
-    assert isinstance(trgt_val, dict), f'Некорректный тип {type(trgt_val)}'
-
-    rating_values['высокий'] = Borders(
-        min=trgt_val[RATING_NAMES.high], 
-        max=trgt_val[RATING_NAMES.high] + 0.01,
-        )
+    min_max_values = trgt_years[month.year]
     
-    rating_values['средний'] = Borders(
-        min=trgt_val[RATING_NAMES.medium], 
-        max=trgt_val[RATING_NAMES.medium] + 0.01,
-        )
+    if log_level == logging.DEBUG: 
+        _check_collection_for_ratings(min_max_values)
 
-    rating_values['низкий'] = Borders(
-        min=trgt_val[RATING_NAMES.low], 
-        max=trgt_val[RATING_NAMES.low] + 0.01,
-        )
-
-    return rating_values
+    return min_max_values
 
 
 def _get_rating_dependencies()->dict:
@@ -420,15 +470,18 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     Получает целевые параметры перехода просрочки из бакета в бакет
     """
     global RATING_NAMES
+    
+
     if rating_dependencies is None:
         rating_dependencies = _get_rating_dependencies()
-    assert isinstance(rating_dependencies, dict), f'Некорректный тип: {type(rating_dependencies)}'
     
-    _check_collection_for_ratings(rating_dependencies)
+    if log_level == logging.DEBUG: 
+        assert isinstance(rating_dependencies, dict), f'Некорректный тип: {type(rating_dependencies)}'
+        _check_collection_for_ratings(rating_dependencies)
     
     return {
         "выход на просрочку": {
-            RATING_NAMES.without: ("1-30", rating_dependencies),
+            "Без просрочки": ("1-30", rating_dependencies),
         },
         "увеличение просрочки": {
             "1-30": ("31-60", 0.25),
@@ -441,65 +494,74 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     }
 
 
+@timer
 def _define_rating_share(
     df: DFrame, 
     month:str, 
     rating:str, 
     min_value:float, 
-    clients_with_rating:dict, 
     sum_month:float)->float:
     global RATING_NAMES
     """
     Заполняет рейтинг в заданном месяце.
     Возвращет итоговое значение доли рейтинга.
     """
-    assert isinstance(df, pd.core.frame.DataFrame), f"Некорректный тип: {type(df)}"
-    assert isinstance(month, str), f"Некорректный тип: {type(month)}"
-    assert isinstance(rating, str), f"Некорректный тип: {type(rating)}"
-    assert isinstance(min_value, float), f"Некорректный тип: {type(min_value)}"
+    # _check_type(df, pd.core.frame.DataFrame)
+    # _check_type(month, str)
+    # _check_type(rating, str)
+    # _check_type(min_value, float)
 
-    _min = min_value
     mask = (df['ratings'] == rating)
-    sum_rating = round(df[mask][month].sum(), 2)
-    if sum_rating / sum_month < _min:
-        without_rating = (df[month].notna()) & (df['ratings'] == RATING_NAMES.without)
-        sum_rating, clients_with_rating = _fill_rating(
+    try:
+        rating_sum = round(df[['ratings', month]].groupby('ratings').sum().loc[rating][0], 2)
+    except KeyError:
+        rating_sum = 0
+    share = rating_sum / sum_month
+
+    if share < min_value:
+        rating_sum = _fill_rating(
             df=df,
-            month=month,
-            empty_criteria=without_rating, 
+            month=month, 
             rating=rating, 
-            sum_rating=sum_rating, 
+            sum_rating=rating_sum, 
             sum_month=sum_month, 
-            min_value=_min, 
-            proceed_clients=clients_with_rating)
-    return sum_rating / sum_month
+            min_value=min_value)
+        share = rating_sum / sum_month
+    
+    logging.debug(f'{month}. {rating}. {share:.2f}. {min_value:.2f}')
+    return share
 
 
-def _fill_rating(df, month, empty_criteria, rating, sum_rating, sum_month, min_value, proceed_clients):
+@timer
+def _fill_rating(df, month, rating, sum_rating, sum_month, min_value):
     """
     Заполняет рейтинги в заданных параметрах
     """
-    empty_data = df[empty_criteria]
-    # это быстрее, чем empty_data.shape[0] на 30 - 40%%
-    empty_rows_count = len(empty_data)
+    idx = pd.IndexSlice
+    without_rating = (df[month].notna()) & (df['ratings'] == RATING_NAMES.without)
+
+    unique_clients = pd.Series(df[without_rating].index.get_level_values('IDКлиента').unique()).to_list()
+    if not unique_clients:
+        msg = f'{month}. {rating}. Отсутствуют уникальные клиенты: {len(unique_clients)}'
+        logging.info(msg)
+    
     cur_share = sum_rating / sum_month
-    step = 1
-    while cur_share < min_value and step <= empty_rows_count:
-        # idx = rnd.randint(0, empty_rows_count - 1)
-        # id_client = empty_data.index.values[idx][1]
-        id_client = empty_data.sample(1).index[0][1]
-        if id_client not in proceed_clients:
-            proceed_clients[id_client] = month
-        elif proceed_clients[id_client] != month:
-            raise Exception(
-                'Клиент повторно обрабатывается из предыдущего месяца!')
-        else:
-            continue
-        df.loc[(slice(None), id_client), 'ratings'] = rating
-        sum_rating += round(df.loc[(slice(None), id_client), month].sum(), 2)
+
+    while cur_share < min_value and unique_clients:
+        logging.debug(f'{get_func_name()}.{month}. proceeding while: {cur_share} < {min_value}')
+        id_client = rnd.choice(unique_clients)
+        
+        client_criteria = without_rating.values & (df.index.get_level_values(1)==id_client)
+        df.loc[client_criteria, 'ratings'] = rating
+
+        sum_rating += round(df[client_criteria].loc[(slice(None), id_client), month].sum(), 2)
         cur_share = sum_rating / sum_month
-        step += 1
-    return sum_rating, proceed_clients
+        
+        msg = f'{get_func_name()}.{month}. рейтинг: {rating} в месяце: {month} имеет {cur_share:.2f} долю'
+        logging.debug(msg)
+        unique_clients.remove(id_client)
+
+    return sum_rating
 
 
 def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, target_share):
