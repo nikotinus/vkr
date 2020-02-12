@@ -30,8 +30,13 @@ from my_logging import get_func_name, get_func_params_and_values, get_func_param
 
 # Блок общего описания
 name = 'default_picture'
-version = 2.4
+version = 2.5
 updates = f"""
+2.6:
+    - TODO: добавить функцию desribe_data()
+2.5:
+    - done with getting resulting backet shares per years
+
 2.4:
     - small bugfix and making code nice
 2.3:
@@ -156,7 +161,11 @@ def main():
     rating_target = get_rating_target_per_years()
     msg = f'Целевые значения рейтингов:\n{rating_target}'
     logging.info(msg)
-    #TODO: backet_result = get_backet_result_values(df_with_backet)
+
+    backet_result = get_backet_result_values(df_with_backet)
+    msg = f'Результаты подбора бакетов:\n{backet_result}'
+    logging.info(msg)
+
     finish = datetime.datetime.now() - start
     df_with_backet.to_csv('result.csv')
     print(f'We finished. Total time execution: {finish}')
@@ -242,6 +251,7 @@ def get_backet_target_values()->dict:
     if log_level == logging.DEBUG: 
         _check_type(rating_probability_tobe_overdue, dict)
     
+    rating_probability_tobe_overdue = dict(sorted(rating_probability_tobe_overdue.items(), key=lambda value: value[1]))
     payment_movements_probability = _get_payment_statuses(rating_probability_tobe_overdue)
     if log_level == logging.DEBUG: 
         _check_type(payment_movements_probability, dict)
@@ -298,7 +308,7 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                     
                     if rating!=RATING_NAMES.without:
                         if rating!=last_rating_to_define:
-                            rating_share = _define_rating_share(
+                            rating_share, rating_sum = _define_rating_share_and_sum(
                                 df=df, 
                                 month=month, 
                                 rating=rating, 
@@ -306,21 +316,22 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                                 sum_month=sum_month)
                             ratings_proceed += 1
 
-                            # начинаем набор следующего бакета
-                            rating_sum = round(df[['ratings', month]].groupby('ratings').sum().loc[rating][0], 2)
-                            target_share = probability
-                            overdue_rating_sum = _fill_payment_overdue(
-                                df=df, 
-                                month=month, 
-                                cur_backet_month=cur_backet_month, 
-                                rating=rating, 
-                                rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
-                                target_share=target_share)
-                            share = overdue_rating_sum / rating_sum
-                        # заполняем последний
                         else: 
                             no_rating_df = df[(df[month].notna()) & (df['ratings']==RATING_NAMES.without)]
                             df.loc[no_rating_df.index.values, 'ratings'] = last_rating_to_define
+
+                     # начинаем набор просроченного бакета
+                    if rating!=RATING_NAMES.without:
+                        target_share = probability
+
+                        _fill_payment_overdue(
+                            df=df, 
+                            month=month, 
+                            cur_backet_month=cur_backet_month, 
+                            rating=rating, 
+                            rating_sum=rating_sum, # может быть, надо заменить на rating_sum, так было
+                            target_share=target_share)
+
                 if log_level == logging.DEBUG: 
                     rating_sums = df.groupby('ratings')[month].sum()
                     total_sum = rating_sums.sum()
@@ -329,29 +340,27 @@ def construct_default_picture(df_to_fill:DFrame, rating_target: dict, backet_tar
                     msg = f'{month}.:\n{rating_shares}'
                     logging.debug(msg)
             elif idx > 1:
-                for category, chance in categories.items():
+                for cur_category, chance in categories.items():
                     category_to_set = chance[0]        
                     target_share = chance[1]
-                    cat_in_prev_backet = df[(df[month].notna()) & \
-                                            (df[prev_backet_month]==category)]
-                    sum_cat_in_prev_backet = round(cat_in_prev_backet[month].sum(), 2)
-                    share_category = 0
-                    if sum_cat_in_prev_backet > 0:
-                        sum_cat_in_cur_backet = _fill_payment_progress(
+                    mask = (df[month].notna()) & (df[prev_backet_month]==cur_category)
+                    prev_backet_amount_in_current_month = df.loc[mask, month].count()
+                    if prev_backet_amount_in_current_month > 0:
+                        _fill_payment_progress(
                             df=df,
-                            month=month,
+                            month=month, 
                             cur_backet_month=cur_backet_month,
-                            cat_in_prev_backet=cat_in_prev_backet, 
-                            sum_cat_in_prev_backet=sum_cat_in_prev_backet, 
+                            prev_backet_mask=mask, 
+                            prev_backet_amount=prev_backet_amount_in_current_month,
+                            cur_category=cur_category,
                             category_to_set=category_to_set, 
                             target_share=target_share)
-                        share_category = sum_cat_in_cur_backet / sum_cat_in_prev_backet
                     # print(f'from {prev_backet_month} and {category}-{sum_cat_in_prev_backet:,.0f} to {cur_backet_month}-{category_to_set}-{sum_cat_in_cur_backet:,.0f}, share: {share_category:.0%}')                                        
     return df
 
 
 @timer
-def get_rating_result_values(df):
+def get_rating_result_values(df, groupby_year=True):
     """
     Возвращеет статистику по долям рейтингов в заданном датафрейме
     """
@@ -375,6 +384,9 @@ def get_rating_result_values(df):
         }
     res = pd.DataFrame(res).T
     res.index=pd.to_datetime(res.index, dayfirst=True)
+    
+    if not groupby_year:
+        return res.groupby(res.index).mean().T
     
     return res.groupby(res.index.year).mean().T
 
@@ -496,7 +508,7 @@ def _get_payment_statuses(rating_dependencies:dict)->dict:
     }
 
 
-def _define_rating_share(
+def _define_rating_share_and_sum(
     df: DFrame, 
     month:str, 
     rating:str, 
@@ -505,14 +517,14 @@ def _define_rating_share(
     global RATING_NAMES
     """
     Заполняет рейтинг в заданном месяце.
-    Возвращет итоговое значение доли рейтинга.
+    Возвращет итоговое значение доли рейтинга и его сумму (для экономии времени на повторном пересчете)
     """
     # _check_type(df, pd.core.frame.DataFrame)
     # _check_type(month, str)
     # _check_type(rating, str)
     # _check_type(min_value, float)
 
-    mask = (df['ratings'] == rating)
+    # mask = (df['ratings'] == rating)
     try:
         rating_sum = round(df[['ratings', month]].groupby('ratings').sum().loc[rating][0], 2)
     except KeyError:
@@ -530,7 +542,7 @@ def _define_rating_share(
         share = rating_sum / sum_month
     
     logging.debug(f'{month}. {rating}. {share:.2f}. {min_value:.2f}')
-    return share
+    return share, rating_sum
 
 
 @timer
@@ -538,34 +550,72 @@ def _fill_rating(df, month, rating, sum_rating, sum_month, min_value):
     """
     Заполняет рейтинги в заданных параметрах
     """
+
+    # with_rating = (df[month].notna()) & (df['ratings'] == rating)
+    # assert round(df[with_rating][month].sum() - sum_rating,2)==0, f'{month}. На старте Суммы рейтингов расходятся на: {df[with_rating][month].sum() - sum_rating}. Последняя сумма по клиенту: {client_sum}'
+
     idx = pd.IndexSlice
     without_rating = (df[month].notna()) & (df['ratings'] == RATING_NAMES.without)
 
     unique_clients = pd.Series(df[without_rating].index.get_level_values('IDКлиента').unique()).to_list()
+
     if not unique_clients:
         msg = f'{month}. {rating}. Отсутствуют уникальные клиенты: {len(unique_clients)}'
         logging.info(msg)
     
     cur_share = sum_rating / sum_month
+    clients_to_match = []
 
     while cur_share < min_value and unique_clients:
         logging.debug(f'{get_func_name()}.{month}. proceeding while: {cur_share} < {min_value}')
-        id_client = rnd.choice(unique_clients)
         
-        client_criteria = without_rating.values & (df.index.get_level_values(1)==id_client)
-        df.loc[client_criteria, 'ratings'] = rating
-
-        sum_rating += round(df[client_criteria].loc[(slice(None), id_client), month].sum(), 2)
+        id_client = unique_clients.pop(rnd.randint(0, len(unique_clients) - 1))
+        clients_to_match.append(id_client)
+        client_sum = df[without_rating].loc[idx[:, id_client], month].sum()
+        sum_rating += client_sum
         cur_share = sum_rating / sum_month
+
+        # id_client = rnd.choice(unique_clients)
+        # client_criteria = without_rating.values & (df.index.get_level_values(1)==id_client)
+        # df.loc[client_criteria, 'ratings'] = rating
+        # sum_rating += round(df[client_criteria].loc[(slice(None), id_client), month].sum(), 2)
+        # cur_share = sum_rating / sum_month
         
         msg = f'{get_func_name()}.{month}. рейтинг: {rating} в месяце: {month} имеет {cur_share:.2f} долю'
         logging.debug(msg)
-        unique_clients.remove(id_client)
+        # unique_clients.remove(id_client)
+
+    df_rating = df.loc[without_rating, 'ratings'].copy()
+    df_rating.loc[idx[:, clients_to_match]] = rating
+    df.loc[without_rating, 'ratings'] = df_rating
 
     return sum_rating
 
 
 def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, target_share):
+    global BACKET_NAMES
+    idx = pd.IndexSlice
+    cur_category = BACKET_NAMES.intime
+    target_category = BACKET_NAMES.first
+
+    no_debt = (df[month].notna()) & (df[cur_backet_month]==cur_category) & (df['ratings'] == rating)
+    rating_deals = pd.Series(df[no_debt].index.get_level_values('Расчет')).to_list()
+    total_amount_deals = len(rating_deals)
+
+    deals_tobe_overdue = []
+    cur_share = 0
+
+    while cur_share < target_share and rating_deals:
+        deal = rating_deals.pop(rnd.randint(0, len(rating_deals) - 1))        
+        deals_tobe_overdue.append(deal)
+        cur_share = len(deals_tobe_overdue) / total_amount_deals
+
+    df_deals = df.loc[no_debt, cur_backet_month].copy()
+    df_deals.loc[idx[deals_tobe_overdue, :]] = BACKET_NAMES.first
+    df.loc[no_debt, cur_backet_month] = df_deals
+
+
+def ___fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, target_share):
     """
     Присваивает платежу статус первой просрочки
     """
@@ -601,6 +651,38 @@ def _fill_payment_overdue(df, month, cur_backet_month, rating, rating_sum, targe
 
 
 def _fill_payment_progress(
+    df,
+    month, 
+    cur_backet_month,
+    prev_backet_mask, 
+    prev_backet_amount,
+    cur_category,
+    category_to_set, 
+    target_share):
+    
+    global BACKET_NAMES
+    
+    idx = pd.IndexSlice
+    cur_category = cur_category
+    target_category = category_to_set
+    
+    backet_deals = pd.Series(df[prev_backet_mask].index.get_level_values('Расчет')).to_list()
+    total_amount_deals = len(backet_deals)
+    
+    deals_to_set = []
+    cur_share = 0
+           
+    while cur_share < target_share and backet_deals:
+        deal = backet_deals.pop(rnd.randint(0, len(backet_deals) - 1))        
+        deals_to_set.append(deal)
+        cur_share = len(deals_to_set) / total_amount_deals
+    
+    df_deals = df.loc[prev_backet_mask, cur_backet_month].copy()
+    df_deals.loc[idx[deals_to_set, :]] = category_to_set
+    df.loc[prev_backet_mask, cur_backet_month] = df_deals
+
+
+def ____fill_payment_progress(
     df,
     month, 
     cur_backet_month,
@@ -669,14 +751,29 @@ def _fill_cur_backet_from_prev(
     return res
 
 
-def get_backet_resulting_shares(df):
+def get_backet_result_values(df, groupby_year=True):
+    """
+    Возвращает ДатаФрейм с результирующими долями бакетов по годам.
+    """
+
+    global BACKET_NAMES
     res = {}
     for column in df.columns:
         tmp = column.split('_')
         if 'backet' in tmp:
             month = tmp[1]
             res[month] = df.groupby(column)[month].sum().to_dict()
-    res = pd.DataFrame(res).T
+    index = [*BACKET_NAMES, 'sum']
+    res = pd.DataFrame(res, index=index).T
+    res.index = pd.to_datetime(res.index, dayfirst=True)
+    if not groupby_year:
+        res = res.T
+        res = res / res.sum() * 100
+        res.loc['sum'] = res.sum()
+        return res
+    res = res.groupby(res.index.year).mean().T 
+    res = res / res.sum() * 100
+    res.loc['sum'] = res.sum()
 
     return res
 
